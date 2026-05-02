@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Xcode（ariake-app2/Yomiage-Flash/ 配下のユーザー固有データ）
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# エディタ
+.vscode/
+.idea/
+*.swp

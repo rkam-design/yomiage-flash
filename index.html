@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>百人一首 読み上げ（WEB版パイロット）</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <!-- 戻るボタン（オープニング以外で表示） -->
+    <header id="header" class="hidden">
+      <button id="backBtn" type="button" class="back-btn" aria-label="はじめに戻る">
+        <span class="chev">‹</span><span>戻る</span>
+      </button>
+      <div id="modeBadge" class="badge badge-normal">通常再生</div>
+      <div id="progressLabel" class="progress-label">0 / 100</div>
+    </header>
+
+    <!-- プログレスバー -->
+    <div id="progressWrap" class="progress-wrap hidden">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+
+    <!-- カード表示エリア -->
+    <section class="stage">
+      <div id="cardSlot" class="card-slot">
+        <img id="cardImage" alt="札" />
+        <div id="cardFallback" class="card-fallback hidden">百人一首</div>
+      </div>
+
+      <div id="phaseLabel" class="phase-label hidden">
+        <span class="spinner"></span>
+        <span id="phaseText">上の句 再生中...</span>
+      </div>
+    </section>
+
+    <!-- 操作エリア（画面ごとに中身を切り替え） -->
+    <section class="controls">
+      <!-- オープニング -->
+      <div id="openingControls">
+        <button id="startNormalBtn" type="button" class="primary-btn">はじめる</button>
+        <button id="startFlashBtn" type="button" class="secondary-btn">⚡ フラッシュ再生</button>
+      </div>
+
+      <!-- 通常再生：◯ボタン -->
+      <div id="tapControls" class="hidden">
+        <button id="tapNextBtn" type="button" class="circle-btn" aria-label="次へ">◯</button>
+      </div>
+
+      <!-- フラッシュ：待機表示 -->
+      <div id="flashWaitControls" class="hidden">
+        <p class="flash-wait">次の札へ...</p>
+      </div>
+
+      <!-- 終了 -->
+      <div id="finishedControls" class="hidden">
+        <h1 class="finish-title">おわり</h1>
+        <p id="finishSubtitle" class="finish-sub">百首すべて読み上げました</p>
+        <button id="returnHomeBtn" type="button" class="primary-btn">はじめに戻る</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

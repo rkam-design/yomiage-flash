@@ -1,0 +1,234 @@
+:root {
+  --bg: #f5f2ee;
+  --accent: #99332f;       /* iOS 版の朱（0.60, 0.20, 0.20） */
+  --accent-flash: #e08a18; /* フラッシュ用オレンジ */
+  --text: #2a2a2a;
+  --muted: #888;
+  --shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Hiragino Mincho ProN", "Yu Mincho", "MS Mincho", serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+}
+
+.hidden { display: none !important; }
+
+/* ヘッダー */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px 4px;
+}
+
+.back-btn {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  font-family: inherit;
+}
+.back-btn .chev {
+  font-size: 22px;
+  line-height: 1;
+  margin-right: 2px;
+}
+
+.badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+}
+.badge-normal { background: var(--accent); }
+.badge-flash  { background: var(--accent-flash); }
+
+.progress-label {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.progress-wrap {
+  height: 6px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 3px;
+  margin: 8px 4px 0;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 280ms ease;
+}
+.progress-bar.flash { background: var(--accent-flash); }
+
+/* ステージ（札表示） */
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+  gap: 18px;
+}
+
+.card-slot {
+  width: 78%;
+  max-width: 320px;
+  aspect-ratio: 240 / 340;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#cardImage {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #fff;
+}
+.card-fallback {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.phase-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0, 0, 0, 0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.spinner.flash { border-top-color: var(--accent-flash); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 操作エリア */
+.controls {
+  padding: 16px 0 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+#openingControls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+
+.primary-btn {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 28px;
+  font-size: 20px;
+  font-weight: 700;
+  width: 240px;
+  height: 56px;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: var(--shadow);
+}
+.primary-btn:active { transform: translateY(1px); }
+
+.secondary-btn {
+  background: transparent;
+  color: var(--accent);
+  border: 2px solid var(--accent);
+  border-radius: 26px;
+  font-size: 18px;
+  font-weight: 700;
+  width: 240px;
+  height: 52px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.secondary-btn:active { transform: translateY(1px); }
+
+.circle-btn {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 32px;
+  font-weight: 700;
+  border: 3px solid #fff;
+  box-shadow: var(--shadow), 0 0 0 1px rgba(0,0,0,0.05);
+  cursor: pointer;
+  font-family: inherit;
+}
+.circle-btn:active { transform: scale(0.96); }
+
+.flash-wait {
+  color: var(--accent-flash);
+  font-size: 16px;
+  margin: 0;
+}
+
+/* 終了画面 */
+#finishedControls {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+}
+.finish-title {
+  color: var(--accent);
+  font-size: 40px;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: 0.1em;
+}
+.finish-sub {
+  color: var(--muted);
+  font-size: 16px;
+  margin: 0 0 8px;
+}
