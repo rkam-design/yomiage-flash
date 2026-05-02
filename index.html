@@ -24,9 +24,13 @@
 
     <!-- カード表示エリア -->
     <section class="stage">
-      <div id="cardSlot" class="card-slot">
-        <img id="cardImage" alt="札" />
-        <div id="cardFallback" class="card-fallback hidden">百人一首</div>
+      <div class="card-wrap">
+        <div id="cardSlot" class="card-slot">
+          <img id="cardImage" alt="札" />
+          <div id="cardFallback" class="card-fallback hidden">百人一首</div>
+        </div>
+        <button id="navPrevBtn" type="button" class="nav-arrow nav-arrow-left" aria-label="前の札へ">◀</button>
+        <button id="navNextBtn" type="button" class="nav-arrow nav-arrow-right" aria-label="次の札へ">▶</button>
       </div>
 
       <div id="phaseLabel" class="phase-label hidden">
@@ -41,6 +45,7 @@
       <div id="openingControls">
         <button id="startNormalBtn" type="button" class="primary-btn">はじめる</button>
         <button id="startFlashBtn" type="button" class="secondary-btn">⚡ フラッシュ再生</button>
+        <button id="startTestBtn" type="button" class="text-link">テスト</button>
       </div>
 
       <!-- 通常再生：◯ボタン -->
@@ -61,6 +66,15 @@
       </div>
     </section>
   </main>
+
+  <!-- エラーポップアップ -->
+  <div id="errorModal" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="errorModalTitle">
+    <div class="modal-card">
+      <h2 id="errorModalTitle" class="modal-title">エラー</h2>
+      <p id="errorModalBody" class="modal-body"></p>
+      <button id="errorModalCloseBtn" type="button" class="primary-btn">閉じる</button>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
