@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 開発・確認はローカル HTTP サーバ経由でのみ可能（`file://` だと `<audio>` の autoplay 制限と CSV の `fetch()` で動かない）。
 
 ```bash
-cd "/Users/micronet/Desktop/個人つくってみた/ariake-web"
+cd "/Users/micronet/Desktop/個人つくってみた/yomiage-flash-web"
 python3 -m http.server 8000
 # → http://localhost:8000/ を開く
 ```
