@@ -4,7 +4,7 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-3";
+const APP_VERSION = "v2026-05-05-4";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
@@ -105,52 +105,78 @@ let skipIntro = (() => {
   try { return localStorage.getItem("skipIntro") === "1"; } catch (_) { return false; }
 })();
 
-// 単一の Audio 要素を使い回す。iOS Safari は new Audio() を多数生成すると
-// 一定枚数で再生不能になる制約があるため、毎回 src を差し替える方式にする。
+// 単一の Audio 要素を使い回す（フォールバック用）。Web Audio がデコード済み
+// AudioBuffer を持つ場合はそちらを優先するので、通常はあまり使われない。
 const sharedAudio = new Audio();
 sharedAudio.preload = "auto";
 // 連続再生時の「割り込み判定」用。stopAudio() で +1 し、コールバックは自分が発行された
 // 当時の世代と現在の世代が一致するときだけ動作する。
 let audioGen = 0;
 
-// ---- 音声プリロード ----
-// 一度ダウンロードした mp3 は Blob URL としてセッション中保持する。
-// 再生時は audioSrcFor() が cache を引いて URL を返す。
-const audioBlobCache = new Map(); // name -> blob URL
-// 進行中の preload を中断するための AbortController（戻る押下時など）。
+// ---- 音声プリロード（Web Audio + Audio fallback の両建て）----
+// AudioBuffer はデコード済み PCM。Web Audio 経由で start() するとゼロ遅延・
+// デコード待ちなしで再生できるので、フラッシュ／テストの素早い連続再生に最適。
+// AudioContext はユーザー操作後にしか resume できないため lazy init。
+let audioContext = null;
+function getAudioContext() {
+  if (!audioContext) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioContext = new AC();
+  }
+  return audioContext;
+}
+function ensureAudioContextResumed() {
+  const ctx = getAudioContext();
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+}
+
+const audioBufferCache = new Map(); // name -> AudioBuffer (decoded PCM)
+const audioBlobCache = new Map();   // name -> blob URL（デコード失敗時の fallback 用）
+let currentSource = null;            // 進行中の AudioBufferSourceNode
 let audioPreloadAbort = null;
 
 function audioSrcFor(name) {
   return audioBlobCache.get(name) ?? audioUrl(name);
 }
 
+// 札画像も先に Image オブジェクトでキックして HTTP キャッシュに入れる。
+// 表示時の fetch/decode が音声再生と競合するのを防ぐ。
+function preloadCardImages(numbers) {
+  for (const n of numbers) {
+    const img = new Image();
+    img.src = cardImageUrl(n);
+  }
+}
+
 // names を並列度 PRELOAD_CONCURRENCY で fetch → Blob URL 化して cache に格納。
 // onProgress(loaded, total) は 1 件完了するごと（成功・失敗問わず）に呼ぶ。
 // signal が abort されたら速やかに止める（既に完了済みのものは保持）。
 async function preloadAudios(names, onProgress, signal) {
-  const todo = names.filter((n) => !audioBlobCache.has(n));
+  const todo = names.filter(
+    (n) => !audioBufferCache.has(n) && !audioBlobCache.has(n)
+  );
   const total = todo.length;
   if (total === 0) {
     onProgress?.(0, 0);
     return { failed: [] };
   }
+  const ctx = getAudioContext();
   let loaded = 0;
   const failed = [];
   const queue = todo.slice();
   async function fetchOnce(name) {
     const res = await fetch(audioUrl(name), { signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.blob();
+    return res.arrayBuffer();
   }
   async function worker() {
     while (queue.length > 0) {
       if (signal?.aborted) return;
       const name = queue.shift();
-      let blob = null;
-      // 一時的なネット失敗を吸収するため最大 3 回まで指数バックオフでリトライ。
+      let arr = null;
       for (let attempt = 0; attempt < 3 && !signal?.aborted; attempt++) {
         try {
-          blob = await fetchOnce(name);
+          arr = await fetchOnce(name);
           break;
         } catch (e) {
           if (e.name === "AbortError") return;
@@ -162,8 +188,23 @@ async function preloadAudios(names, onProgress, signal) {
           }
         }
       }
-      if (!signal?.aborted && blob) {
-        audioBlobCache.set(name, URL.createObjectURL(blob));
+      if (!signal?.aborted && arr) {
+        let decoded = false;
+        if (ctx) {
+          try {
+            // decodeAudioData は ArrayBuffer を消費する。Blob URL も作りたいので
+            // 先にコピーを取ってから渡す（slice(0) でコピー）。
+            const buffer = await ctx.decodeAudioData(arr.slice(0));
+            audioBufferCache.set(name, buffer);
+            decoded = true;
+          } catch (e) {
+            console.warn(`decode 失敗、Audio fallback: ${name}.mp3`, e);
+          }
+        }
+        // Web Audio 不可 or デコード失敗時のフォールバックとして Blob URL も保持。
+        if (!decoded) {
+          audioBlobCache.set(name, URL.createObjectURL(new Blob([arr], { type: "audio/mpeg" })));
+        }
       }
       loaded += 1;
       if (!signal?.aborted) onProgress?.(loaded, total);
@@ -337,8 +378,12 @@ async function loadRules() {
 
 // ---- 音声再生 ----
 function stopAudio() {
-  // 既存のコールバックを無効化してから、共有 Audio を停止する。
   audioGen += 1;
+  if (currentSource) {
+    currentSource.onended = null;
+    try { currentSource.stop(); } catch (_) {}
+    currentSource = null;
+  }
   sharedAudio.onended = null;
   sharedAudio.onerror = null;
   sharedAudio.onplaying = null;
@@ -347,31 +392,72 @@ function stopAudio() {
   if (game.waitTimer)  { clearTimeout(game.waitTimer);  game.waitTimer  = null; }
 }
 
-function playAudio(name, onEnd) {
-  stopAudio();
-  const myGen = audioGen;
+// AudioBuffer がキャッシュにあれば Web Audio で start()。即時再生・デコード待ちなし。
+// なければ <audio> 要素にフォールバック。返り値はどちらの経路で再生したか（"buffer"|"audio"）
+// または null（即失敗）。
+function startPlaybackForName(name, myGen, callbacks) {
+  const buffer = audioBufferCache.get(name);
+  if (buffer) {
+    const ctx = getAudioContext();
+    if (ctx) {
+      ensureAudioContextResumed();
+      try {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.onended = () => {
+          if (myGen !== audioGen) return;
+          if (currentSource === source) currentSource = null;
+          callbacks.onEnded?.();
+        };
+        currentSource = source;
+        source.start();
+        callbacks.onStarted?.();
+        return "buffer";
+      } catch (e) {
+        console.warn(`Web Audio 再生失敗、Audio fallback: ${name}`, e);
+        currentSource = null;
+      }
+    }
+  }
+  // Audio 要素フォールバック
   sharedAudio.src = audioSrcFor(name);
-  sharedAudio.onended = () => { if (myGen === audioGen) onEnd?.(); };
+  sharedAudio.onplaying = () => {
+    if (myGen === audioGen) callbacks.onStarted?.();
+  };
+  sharedAudio.onended = () => {
+    if (myGen === audioGen) callbacks.onEnded?.();
+  };
   sharedAudio.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
-    if (myGen === audioGen) onEnd?.();
+    if (myGen === audioGen) callbacks.onEnded?.();
   };
-  // ブラウザは autoplay にユーザー操作を要求するため、再生開始のフォールバック処理を挟む
   const p = sharedAudio.play();
   if (p && typeof p.catch === "function") {
     p.catch((err) => {
       console.warn("音声再生に失敗:", err);
-      if (myGen === audioGen) onEnd?.();
+      // 再生不可（autoplay 拒否等）でも進行は止めない。
+      if (myGen === audioGen) {
+        callbacks.onStarted?.();
+        callbacks.onEnded?.();
+      }
     });
   }
+  return "audio";
+}
+
+function playAudio(name, onEnd) {
+  stopAudio();
+  const myGen = audioGen;
+  startPlaybackForName(name, myGen, {
+    onEnded: () => onEnd?.(),
+  });
 }
 
 function playAudioFlash(name, durationMs, onTimerFired) {
   stopAudio();
   const myGen = audioGen;
   let timerStarted = false;
-  // 実際に再生が始まった瞬間にタイマーを走らせる。ネットワーク遅延で音声ロードが遅れても、
-  // 必ず音声の頭から durationMs を確保する（タイマー先行で無音のまま次札へ進む事故を防ぐ）。
   const startTimer = () => {
     if (timerStarted || myGen !== audioGen) return;
     timerStarted = true;
@@ -380,20 +466,11 @@ function playAudioFlash(name, durationMs, onTimerFired) {
       onTimerFired?.();
     }, Math.max(0, durationMs));
   };
-  sharedAudio.src = audioSrcFor(name);
-  sharedAudio.onplaying = startTimer;
-  sharedAudio.onerror = () => {
-    console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
-    if (myGen === audioGen) onTimerFired?.();
-  };
-  const p = sharedAudio.play();
-  if (p && typeof p.catch === "function") {
-    p.catch((err) => {
-      console.warn("音声再生に失敗:", err);
-      // 再生不可（autoplay 拒否等）でも進行は止めない。タイマーをフォールバック起動。
-      if (myGen === audioGen) startTimer();
-    });
-  }
+  startPlaybackForName(name, myGen, {
+    onStarted: startTimer,
+    // フラッシュは音声末尾まで再生せず時間で切り上げるので onEnded は使わない（タイマー駆動）。
+    onEnded: () => {},
+  });
 }
 
 // ---- 画面描画 ----
@@ -507,6 +584,10 @@ function render() {
 
 // ---- 状態遷移 ----
 async function startGame(mode) {
+  // ユーザー操作直後の今のうちに AudioContext を初期化／resume する。
+  // iOS Safari は autoplay policy で gesture 文脈外の resume() を拒否する。
+  ensureAudioContextResumed();
+
   game.mode = mode;
   game.shuffled = deckForMode(mode);
   game.index = 0;
@@ -514,6 +595,10 @@ async function startGame(mode) {
     showError("テスト対象（決まり字 2 字）の札が rules.csv に見つかりませんでした。");
     return;
   }
+
+  // 札画像も先読みして表示時の fetch/decode が音声と競合しないようにする。
+  const imgNumbers = mode === PlayMode.TEST ? game.shuffled.slice() : [0, ...game.shuffled];
+  preloadCardImages(imgNumbers);
 
   const { critical, background } = buildAudioNames(mode, game.shuffled);
   const critToFetch = critical.filter((n) => !audioBlobCache.has(n));
