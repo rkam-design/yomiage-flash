@@ -4,7 +4,7 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-2";
+const APP_VERSION = "v2026-05-05-3";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
@@ -59,6 +59,7 @@ const els = {
   startNormalBtn: document.getElementById("startNormalBtn"),
   startFlashBtn: document.getElementById("startFlashBtn"),
   startTestBtn: document.getElementById("startTestBtn"),
+  skipIntroBtn: document.getElementById("skipIntroBtn"),
   diagnoseBtn: document.getElementById("diagnoseBtn"),
   tapNextBtn: document.getElementById("tapNextBtn"),
   returnHomeBtn: document.getElementById("returnHomeBtn"),
@@ -98,6 +99,11 @@ const game = {
   // プリロード進捗（State.LOADING 中のみ有効）。
   loadingProgress: { loaded: 0, total: 0 },
 };
+
+// フラッシュ再生で序歌（I-000A）をスキップするか。localStorage で保持。
+let skipIntro = (() => {
+  try { return localStorage.getItem("skipIntro") === "1"; } catch (_) { return false; }
+})();
 
 // 単一の Audio 要素を使い回す。iOS Safari は new Audio() を多数生成すると
 // 一定枚数で再生不能になる制約があるため、毎回 src を差し替える方式にする。
@@ -232,7 +238,7 @@ function buildAudioNames(mode, shuffled) {
   if (mode === PlayMode.TEST) {
     for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
   } else if (mode === PlayMode.FLASH) {
-    critical.push("I-000A");
+    if (!skipIntro) critical.push("I-000A");
     for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
   } else {
     // NORMAL: 序歌 + 先頭 NORMAL_CRITICAL_CARDS 枚分は必須。残りはバックグラウンド。
@@ -533,7 +539,8 @@ async function startGame(mode) {
   // 残りはバックグラウンドで継続取得（NORMAL モードで分割した場合のみ非空）。
   if (background.length > 0) preloadAudiosInBackground(background);
 
-  if (mode === PlayMode.TEST) {
+  // TEST は元々序歌スキップ。FLASH も序歌オフが設定されていればスキップして即札再生へ。
+  if (mode === PlayMode.TEST || (mode === PlayMode.FLASH && skipIntro)) {
     moveToNextCard();
   } else {
     setCard(0);
@@ -699,6 +706,12 @@ els.diagnoseBtn.addEventListener("click", () => {
   els.diagnoseBtn.blur();
   runAudioSelfTest();
 });
+els.skipIntroBtn.addEventListener("click", () => {
+  els.skipIntroBtn.blur();
+  skipIntro = !skipIntro;
+  els.skipIntroBtn.setAttribute("aria-pressed", String(skipIntro));
+  try { localStorage.setItem("skipIntro", skipIntro ? "1" : "0"); } catch (_) {}
+});
 els.tapNextBtn.addEventListener("click", onTapNext);
 els.backBtn.addEventListener("click", returnToOpening);
 els.returnHomeBtn.addEventListener("click", returnToOpening);
@@ -728,6 +741,7 @@ document.addEventListener("keydown", (e) => {
 (async function init() {
   const versionEl = document.getElementById("appVersion");
   if (versionEl) versionEl.textContent = APP_VERSION;
+  els.skipIntroBtn.setAttribute("aria-pressed", String(skipIntro));
   setCard(0);
   await loadRules();
   render();
