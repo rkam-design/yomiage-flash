@@ -21,8 +21,6 @@ const State = Object.freeze({
 
 const FLASH_GAP_MS = 500;
 const DEFAULT_FLASH_MS = 700;
-// time 到達後に音声をフェードアウトさせる長さ。FLASH_GAP_MS 以内に収めると次札と被らない。
-const FADE_OUT_MS = 200;
 
 // ---- DOM ----
 const els = {
@@ -76,15 +74,21 @@ const game = {
   currentCard: 0,
   cardTimes: new Map(), // no -> ミリ秒（rules.csv の time 列）
   cardCounts: new Map(), // no -> 決まり字の字数（rules.csv の count 列）
-  audio: null,
   flashTimer: null,
   waitTimer: null,
-  fadeTimer: null,
   // 一時停止時に保存する「停止位置の index」（テストモードの ◀▶ 用）。
   pauseAnchorIndex: null,
   // 一時停止前に再生していた句の状態（CARD_A / CARD_B）。再開時に同じ句を頭から再生する。
   pausedFromState: null,
 };
+
+// 単一の Audio 要素を使い回す。iOS Safari は new Audio() を多数生成すると
+// 一定枚数で再生不能になる制約があるため、毎回 src を差し替える方式にする。
+const sharedAudio = new Audio();
+sharedAudio.preload = "auto";
+// 連続再生時の「割り込み判定」用。stopAudio() で +1 し、コールバックは自分が発行された
+// 当時の世代と現在の世代が一致するときだけ動作する。
+let audioGen = 0;
 
 // ---- ユーティリティ ----
 const pad3 = (n) => String(n).padStart(3, "0");
@@ -167,88 +171,61 @@ async function loadRules() {
 
 // ---- 音声再生 ----
 function stopAudio() {
-  if (game.audio) {
-    game.audio.onended = null;
-    game.audio.onerror = null;
-    game.audio.onplaying = null;
-    try { game.audio.pause(); } catch (_) {}
-    game.audio = null;
-  }
+  // 既存のコールバックを無効化してから、共有 Audio を停止する。
+  audioGen += 1;
+  sharedAudio.onended = null;
+  sharedAudio.onerror = null;
+  sharedAudio.onplaying = null;
+  try { sharedAudio.pause(); } catch (_) {}
   if (game.flashTimer) { clearTimeout(game.flashTimer); game.flashTimer = null; }
   if (game.waitTimer)  { clearTimeout(game.waitTimer);  game.waitTimer  = null; }
-  if (game.fadeTimer)  { clearTimeout(game.fadeTimer);  game.fadeTimer  = null; }
-}
-
-// 指定の audio に対して fadeMs かけて音量 1→0 のフェードアウトを行い、最後に pause する。
-// stopAudio() で割り込まれたら（fadeTimer がクリアされる）即終了。
-function startFadeOut(audio, fadeMs) {
-  if (!audio) return;
-  if (fadeMs <= 0) {
-    try { audio.pause(); } catch (_) {}
-    return;
-  }
-  const steps = Math.max(1, Math.floor(fadeMs / 10)); // 10ms 刻みを目安
-  const stepMs = fadeMs / steps;
-  let i = 0;
-  const tick = () => {
-    if (game.audio !== audio) return; // 別の音声に切り替わっていたらフェードを破棄
-    i += 1;
-    audio.volume = Math.max(0, 1 - i / steps);
-    if (i < steps) {
-      game.fadeTimer = setTimeout(tick, stepMs);
-    } else {
-      game.fadeTimer = null;
-      try { audio.pause(); } catch (_) {}
-    }
-  };
-  game.fadeTimer = setTimeout(tick, stepMs);
 }
 
 function playAudio(name, onEnd) {
   stopAudio();
-  const a = new Audio(audioUrl(name));
-  game.audio = a;
-  a.onended = () => { if (game.audio === a) onEnd?.(); };
-  a.onerror = () => {
+  const myGen = audioGen;
+  sharedAudio.src = audioUrl(name);
+  sharedAudio.onended = () => { if (myGen === audioGen) onEnd?.(); };
+  sharedAudio.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
-    if (game.audio === a) onEnd?.();
+    if (myGen === audioGen) onEnd?.();
   };
   // ブラウザは autoplay にユーザー操作を要求するため、再生開始のフォールバック処理を挟む
-  const p = a.play();
+  const p = sharedAudio.play();
   if (p && typeof p.catch === "function") {
     p.catch((err) => {
       console.warn("音声再生に失敗:", err);
-      if (game.audio === a) onEnd?.();
+      if (myGen === audioGen) onEnd?.();
     });
   }
 }
 
 function playAudioFlash(name, durationMs, onTimerFired) {
   stopAudio();
-  const a = new Audio(audioUrl(name));
-  game.audio = a;
+  const myGen = audioGen;
   let timerStarted = false;
   // 実際に再生が始まった瞬間にタイマーを走らせる。ネットワーク遅延で音声ロードが遅れても、
   // 必ず音声の頭から durationMs を確保する（タイマー先行で無音のまま次札へ進む事故を防ぐ）。
   const startTimer = () => {
-    if (timerStarted || game.audio !== a) return;
+    if (timerStarted || myGen !== audioGen) return;
     timerStarted = true;
     game.flashTimer = setTimeout(() => {
       game.flashTimer = null;
       onTimerFired?.();
     }, Math.max(0, durationMs));
   };
-  a.onplaying = startTimer;
-  a.onerror = () => {
+  sharedAudio.src = audioUrl(name);
+  sharedAudio.onplaying = startTimer;
+  sharedAudio.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
-    if (game.audio === a) onTimerFired?.();
+    if (myGen === audioGen) onTimerFired?.();
   };
-  const p = a.play();
+  const p = sharedAudio.play();
   if (p && typeof p.catch === "function") {
     p.catch((err) => {
       console.warn("音声再生に失敗:", err);
       // 再生不可（autoplay 拒否等）でも進行は止めない。タイマーをフォールバック起動。
-      if (game.audio === a) startTimer();
+      if (myGen === audioGen) startTimer();
     });
   }
 }
@@ -456,10 +433,9 @@ function onAudioFinished() {
 }
 
 function onFlashTimerFired() {
-  // time に達したら音声は即停止せず、FADE_OUT_MS かけてフェードアウトさせる。
-  // 状態遷移と次札タイマー（waitTimer）は即時に進める。
+  // time に達したら音声を即停止する。
   game.flashTimer = null;
-  startFadeOut(game.audio, FADE_OUT_MS);
+  try { sharedAudio.pause(); } catch (_) {}
 
   game.index += 1;
   if (game.index >= game.shuffled.length) {
