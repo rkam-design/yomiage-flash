@@ -4,7 +4,7 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-4";
+const APP_VERSION = "v2026-05-05-5";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
@@ -722,8 +722,14 @@ function onAudioFinished() {
 }
 
 function onFlashTimerFired() {
-  // time に達したら音声を即停止する。
+  // time に達したら音声を即停止する。Web Audio の AudioBufferSourceNode と
+  // <audio> 要素の両方を確実に止める（どちらの経路で再生中かに関わらず）。
   game.flashTimer = null;
+  if (currentSource) {
+    currentSource.onended = null;
+    try { currentSource.stop(); } catch (_) {}
+    currentSource = null;
+  }
   try { sharedAudio.pause(); } catch (_) {}
 
   game.index += 1;
