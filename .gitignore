@@ -10,3 +10,10 @@ xcuserdata/
 .vscode/
 .idea/
 *.swp
+
+# Claude Code 作業用
+.claude/
+.playwright-mcp/
+
+# Adobe Illustrator 一時ファイル
+~*.tmp

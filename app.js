@@ -20,7 +20,9 @@ const State = Object.freeze({
 });
 
 const FLASH_GAP_MS = 500;
-const DEFAULT_FLASH_TIME = 0.7;
+const DEFAULT_FLASH_MS = 700;
+// time 到達後に音声をフェードアウトさせる長さ。FLASH_GAP_MS 以内に収めると次札と被らない。
+const FADE_OUT_MS = 200;
 
 // ---- DOM ----
 const els = {
@@ -72,10 +74,12 @@ const game = {
   shuffled: [],
   index: 0,
   currentCard: 0,
-  cardTimes: new Map(), // no -> seconds
+  cardTimes: new Map(), // no -> ミリ秒（rules.csv の time 列）
+  cardCounts: new Map(), // no -> 決まり字の字数（rules.csv の count 列）
   audio: null,
   flashTimer: null,
   waitTimer: null,
+  fadeTimer: null,
   // 一時停止時に保存する「停止位置の index」（テストモードの ◀▶ 用）。
   pauseAnchorIndex: null,
   // 一時停止前に再生していた句の状態（CARD_A / CARD_B）。再開時に同じ句を頭から再生する。
@@ -87,13 +91,25 @@ const pad3 = (n) => String(n).padStart(3, "0");
 const cardImageUrl = (n) => `${CARDS_DIR}/C-${pad3(n)}.png`;
 const audioUrl = (name) => `${AUDIO_DIR}/${name}.mp3`;
 
-function shuffled1to100() {
-  const a = Array.from({ length: 100 }, (_, i) => i + 1);
+function shuffleArray(arr) {
+  const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// モード別の出題セット。TEST は決まり字 2 字（count=2）の札のみ、その他は 1〜100 全件。
+function deckForMode(mode) {
+  if (mode === PlayMode.TEST) {
+    const twos = [];
+    for (let i = 1; i <= 100; i++) {
+      if (game.cardCounts.get(i) === 2) twos.push(i);
+    }
+    return shuffleArray(twos);
+  }
+  return shuffleArray(Array.from({ length: 100 }, (_, i) => i + 1));
 }
 
 // FLASH と TEST はタイマー駆動・オレンジ系配色を共有する
@@ -116,12 +132,14 @@ async function loadRules() {
       const cols = line.split(",");
       if (cols.length < 5) { skipped.push(`行 ${lineNo}: 列数不足 (${cols.length})`); continue; }
       const no = parseInt(cols[0], 10);
+      const cnt = parseInt(cols[1], 10);
       const t = parseFloat(cols[4]);
       if (!Number.isFinite(no) || !Number.isFinite(t)) {
         skipped.push(`行 ${lineNo}: no="${cols[0]}" / time="${cols[4]}" が数値として解釈できません`);
         continue;
       }
       game.cardTimes.set(no, t);
+      if (Number.isFinite(cnt)) game.cardCounts.set(no, cnt);
     }
     console.log(`rules.csv: ${game.cardTimes.size} 件読み込みました`);
     if (game.cardTimes.size < 100) {
@@ -157,6 +175,32 @@ function stopAudio() {
   }
   if (game.flashTimer) { clearTimeout(game.flashTimer); game.flashTimer = null; }
   if (game.waitTimer)  { clearTimeout(game.waitTimer);  game.waitTimer  = null; }
+  if (game.fadeTimer)  { clearTimeout(game.fadeTimer);  game.fadeTimer  = null; }
+}
+
+// 指定の audio に対して fadeMs かけて音量 1→0 のフェードアウトを行い、最後に pause する。
+// stopAudio() で割り込まれたら（fadeTimer がクリアされる）即終了。
+function startFadeOut(audio, fadeMs) {
+  if (!audio) return;
+  if (fadeMs <= 0) {
+    try { audio.pause(); } catch (_) {}
+    return;
+  }
+  const steps = Math.max(1, Math.floor(fadeMs / 10)); // 10ms 刻みを目安
+  const stepMs = fadeMs / steps;
+  let i = 0;
+  const tick = () => {
+    if (game.audio !== audio) return; // 別の音声に切り替わっていたらフェードを破棄
+    i += 1;
+    audio.volume = Math.max(0, 1 - i / steps);
+    if (i < steps) {
+      game.fadeTimer = setTimeout(tick, stepMs);
+    } else {
+      game.fadeTimer = null;
+      try { audio.pause(); } catch (_) {}
+    }
+  };
+  game.fadeTimer = setTimeout(tick, stepMs);
 }
 
 function playAudio(name, onEnd) {
@@ -178,7 +222,7 @@ function playAudio(name, onEnd) {
   }
 }
 
-function playAudioFlash(name, durationSec, onTimerFired) {
+function playAudioFlash(name, durationMs, onTimerFired) {
   stopAudio();
   const a = new Audio(audioUrl(name));
   game.audio = a;
@@ -193,7 +237,7 @@ function playAudioFlash(name, durationSec, onTimerFired) {
   game.flashTimer = setTimeout(() => {
     game.flashTimer = null;
     onTimerFired?.();
-  }, Math.max(0, durationSec * 1000));
+  }, Math.max(0, durationMs));
 }
 
 // ---- 画面描画 ----
@@ -228,10 +272,11 @@ function render() {
     els.modeBadge.classList.toggle("badge-normal", !useFlashColor);
     els.progressBar.classList.toggle("flash", useFlashColor);
 
+    const total = game.shuffled.length || 100;
     const isIntro = s === State.INTRO_A || s === State.INTRO_B;
     const shownIndex = isIntro ? 0 : (game.index + 1);
-    els.progressLabel.textContent = isIntro ? "序歌" : `${shownIndex} / 100`;
-    const ratio = isIntro ? 0 : (game.index + 1) / 100;
+    els.progressLabel.textContent = isIntro ? "序歌" : `${shownIndex} / ${total}`;
+    const ratio = isIntro ? 0 : (game.index + 1) / total;
     els.progressBar.style.width = `${(ratio * 100).toFixed(2)}%`;
   }
 
@@ -294,9 +339,13 @@ function render() {
 // ---- 状態遷移 ----
 function startGame(mode) {
   game.mode = mode;
-  game.shuffled = shuffled1to100();
+  game.shuffled = deckForMode(mode);
   game.index = 0;
   if (mode === PlayMode.TEST) {
+    if (game.shuffled.length === 0) {
+      showError("テスト対象（決まり字 2 字）の札が rules.csv に見つかりませんでした。");
+      return;
+    }
     // テストモード：序歌（I-000A/B）を飛ばして即フラッシュ再生
     moveToNextCard();
   } else {
@@ -380,7 +429,7 @@ function onAudioFinished() {
       break;
     case State.CARD_B:
       game.index += 1;
-      if (game.index >= 100) {
+      if (game.index >= game.shuffled.length) {
         game.state = State.FINISHED;
         stopAudio();
         render();
@@ -394,9 +443,13 @@ function onAudioFinished() {
 }
 
 function onFlashTimerFired() {
-  stopAudio();
+  // time に達したら音声は即停止せず、FADE_OUT_MS かけてフェードアウトさせる。
+  // 状態遷移と次札タイマー（waitTimer）は即時に進める。
+  game.flashTimer = null;
+  startFadeOut(game.audio, FADE_OUT_MS);
+
   game.index += 1;
-  if (game.index >= 100) {
+  if (game.index >= game.shuffled.length) {
     game.state = State.FINISHED;
     render();
     return;
@@ -415,7 +468,7 @@ function moveToNextCard() {
   game.state = State.CARD_A;
   render();
   if (isFlashLike()) {
-    const dur = game.cardTimes.get(num) ?? DEFAULT_FLASH_TIME;
+    const dur = game.cardTimes.get(num) ?? DEFAULT_FLASH_MS;
     playAudioFlash(`I-${pad3(num)}A`, dur, onFlashTimerFired);
   } else {
     playAudio(`I-${pad3(num)}A`, onAudioFinished);

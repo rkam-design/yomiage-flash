@@ -35,7 +35,7 @@ python3 -m http.server 8000
 通常再生（`PlayMode.NORMAL`）とフラッシュ再生（`PlayMode.FLASH`）で遷移経路が分岐する：
 
 - **通常**: `CARD_A`（A音声を最後まで）→ `WAIT_TAP`（◯ボタン待ち）→ `CARD_B`（B音声を最後まで）→ 次札
-- **フラッシュ**: `CARD_A`（A音声を `rules.csv` の `time` 秒だけ再生）→ `FLASH_WAIT`（500ms 待機）→ 次札。B 音声は使わない。
+- **フラッシュ**: `CARD_A`（A音声を `rules.csv` の `time`（ミリ秒）だけ再生）→ `FLASH_WAIT`（500ms 待機）→ 次札。B 音声は使わない。
 
 通常再生は `<audio>` の `ended` イベント駆動（`onAudioFinished`）、フラッシュは `setTimeout` 駆動（`onFlashTimerFired`）。両者は別の遷移ハンドラに分かれている。状態遷移を変更する際は **両方** を確認すること。
 
@@ -51,7 +51,7 @@ python3 -m http.server 8000
 
 - 画像: `cards/C-{NNN}.png`（`NNN` はゼロ埋め 3 桁、000〜100）。`C-000` は序歌用の表紙。
 - 音声: `mp3_naniwadu/I-{NNN}{A|B}.mp3`。`A` = 上の句、`B` = 下の句。`I-000A` / `I-000B` は序歌（難波津）。
-- ルール: `rules.csv`（UTF-8）。列は `no, count, kimari-ji, eng, time`。`time` はフラッシュ再生で A 音声を切り上げる秒数。
+- ルール: `rules.csv`（UTF-8）。列は `no, count, kimari-ji, eng, time`。`time` はフラッシュ再生で A 音声を切り上げるミリ秒（整数。`setTimeout` にそのまま渡される）。
 
 シャッフル対象は **1〜100 のみ**。`000`（序歌）はシャッフル配列に含めず、必ず最初に固定で再生する（仕様書 6 項参照）。
 
