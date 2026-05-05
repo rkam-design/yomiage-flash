@@ -2,6 +2,10 @@
  * iOS 版 (Yomiage-Flash/ContentView.swift) と等価な状態機械を JS で実装。
  */
 
+// キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
+// 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
+const APP_VERSION = "v2026-05-05-1";
+
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
 const RULES_URL = "rules.csv";
@@ -650,6 +654,8 @@ document.addEventListener("keydown", (e) => {
 
 // ---- 起動 ----
 (async function init() {
+  const versionEl = document.getElementById("appVersion");
+  if (versionEl) versionEl.textContent = APP_VERSION;
   setCard(0);
   await loadRules();
   render();

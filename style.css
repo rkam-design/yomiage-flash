@@ -287,6 +287,19 @@ html, body {
   margin: 0;
 }
 
+.app-version {
+  position: fixed;
+  right: 8px;
+  bottom: calc(env(safe-area-inset-bottom) + 6px);
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0.55;
+  letter-spacing: 0.05em;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* 終了画面 */
 #finishedControls {
   text-align: center;
