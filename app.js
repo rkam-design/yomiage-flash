@@ -4,13 +4,13 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-5";
+const APP_VERSION = "v2026-05-05-6";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
 const RULES_URL = "rules.csv";
 
-const PlayMode = Object.freeze({ NORMAL: "normal", FLASH: "flash", TEST: "test" });
+const PlayMode = Object.freeze({ NORMAL: "normal", FLASH: "flash", TEST: "test", KIMARIJI: "kimariji" });
 const State = Object.freeze({
   OPENING: "opening",
   LOADING: "loading",
@@ -59,7 +59,9 @@ const els = {
   startNormalBtn: document.getElementById("startNormalBtn"),
   startFlashBtn: document.getElementById("startFlashBtn"),
   startTestBtn: document.getElementById("startTestBtn"),
+  startKimarijiBtn: document.getElementById("startKimarijiBtn"),
   skipIntroBtn: document.getElementById("skipIntroBtn"),
+  skipIntroKimarijiBtn: document.getElementById("skipIntroKimarijiBtn"),
   diagnoseBtn: document.getElementById("diagnoseBtn"),
   tapNextBtn: document.getElementById("tapNextBtn"),
   returnHomeBtn: document.getElementById("returnHomeBtn"),
@@ -98,11 +100,18 @@ const game = {
   pausedFromState: null,
   // プリロード進捗（State.LOADING 中のみ有効）。
   loadingProgress: { loaded: 0, total: 0 },
+  // KIMARIJI / NORMAL 共通の B 反復回数（KIMARIJI で B を 2 回再生するために使用）。
+  // 0 = まだ 1 回目を再生中、1 = 2 回目を再生中（KIMARIJI のみ）。INTRO_B にも流用。
+  cardBIndex: 0,
 };
 
 // フラッシュ再生で序歌（I-000A）をスキップするか。localStorage で保持。
 let skipIntro = (() => {
   try { return localStorage.getItem("skipIntro") === "1"; } catch (_) { return false; }
+})();
+// 決まり字読みで序歌（I-000A/B）をスキップするか。localStorage で保持。
+let skipIntroKimariji = (() => {
+  try { return localStorage.getItem("skipIntroKimariji") === "1"; } catch (_) { return false; }
 })();
 
 // 単一の Audio 要素を使い回す（フォールバック用）。Web Audio がデコード済み
@@ -281,6 +290,14 @@ function buildAudioNames(mode, shuffled) {
   } else if (mode === PlayMode.FLASH) {
     if (!skipIntro) critical.push("I-000A");
     for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
+  } else if (mode === PlayMode.KIMARIJI) {
+    // 決まり字読み: 上の句 (A) は time 駆動なので全件 critical。
+    // 下の句 (B) はタップ駆動だが先頭分は必須、残りはバックグラウンド。
+    if (!skipIntroKimariji) critical.push("I-000A", "I-000B");
+    for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
+    const split = Math.min(NORMAL_CRITICAL_CARDS, shuffled.length);
+    for (let i = 0; i < split; i++) critical.push(`I-${pad3(shuffled[i])}B`);
+    for (let i = split; i < shuffled.length; i++) background.push(`I-${pad3(shuffled[i])}B`);
   } else {
     // NORMAL: 序歌 + 先頭 NORMAL_CRITICAL_CARDS 枚分は必須。残りはバックグラウンド。
     critical.push("I-000A", "I-000B");
@@ -500,7 +517,11 @@ function render() {
   } else {
     els.header.classList.remove("hidden");
     els.progressWrap.classList.remove("hidden");
-    els.modeBadge.textContent = isTest ? "テスト" : (isFlash ? "⚡ フラッシュ" : "通常再生");
+    els.modeBadge.textContent =
+      isTest ? "テスト" :
+      isFlash ? "⚡ フラッシュ" :
+      game.mode === PlayMode.KIMARIJI ? "📖 決まり字読み" :
+      "通常再生";
     els.modeBadge.classList.toggle("badge-flash", useFlashColor);
     els.modeBadge.classList.toggle("badge-normal", !useFlashColor);
     els.progressBar.classList.toggle("flash", useFlashColor);
@@ -534,7 +555,9 @@ function render() {
       break;
     case State.CARD_A:
       els.phaseLabel.classList.remove("hidden");
-      els.phaseText.textContent = useFlashColor ? "決まり字 再生中..." : "上の句 再生中...";
+      // KIMARIJI も A は決まり字 (time 駆動) なので同じ文言を表示。
+      els.phaseText.textContent =
+        (useFlashColor || game.mode === PlayMode.KIMARIJI) ? "決まり字 再生中..." : "上の句 再生中...";
       break;
     case State.CARD_B:
       els.phaseLabel.classList.remove("hidden");
@@ -578,7 +601,10 @@ function render() {
 
   if (s === State.FINISHED) {
     els.finishSubtitle.textContent =
-      isTest ? "テスト 完了" : (isFlash ? "フラッシュ再生 完了" : "百首すべて読み上げました");
+      isTest ? "テスト 完了" :
+      isFlash ? "フラッシュ再生 完了" :
+      game.mode === PlayMode.KIMARIJI ? "決まり字読み 完了" :
+      "百首すべて読み上げました";
   }
 }
 
@@ -624,12 +650,17 @@ async function startGame(mode) {
   // 残りはバックグラウンドで継続取得（NORMAL モードで分割した場合のみ非空）。
   if (background.length > 0) preloadAudiosInBackground(background);
 
-  // TEST は元々序歌スキップ。FLASH も序歌オフが設定されていればスキップして即札再生へ。
-  if (mode === PlayMode.TEST || (mode === PlayMode.FLASH && skipIntro)) {
+  // TEST は元々序歌スキップ。FLASH/KIMARIJI も序歌オフが設定されていればスキップ。
+  const skipNow =
+    mode === PlayMode.TEST ||
+    (mode === PlayMode.FLASH && skipIntro) ||
+    (mode === PlayMode.KIMARIJI && skipIntroKimariji);
+  if (skipNow) {
     moveToNextCard();
   } else {
     setCard(0);
     game.state = State.INTRO_A;
+    game.cardBIndex = 0;
     render();
     playAudio("I-000A", onAudioFinished);
   }
@@ -648,6 +679,7 @@ function togglePause() {
     const num = game.shuffled[game.index];
     if (from === State.CARD_B) {
       game.state = State.CARD_B;
+      game.cardBIndex = 0;
       render();
       playAudio(`I-${pad3(num)}B`, onAudioFinished);
     } else {
@@ -695,11 +727,18 @@ function onAudioFinished() {
   switch (game.state) {
     case State.INTRO_A:
       game.state = State.INTRO_B;
+      game.cardBIndex = 0;
       render();
       playAudio("I-000B", onAudioFinished);
       break;
     case State.INTRO_B:
-      moveToNextCard();
+      // 決まり字読みは序歌の B を 2 回再生してから札へ。
+      if (game.mode === PlayMode.KIMARIJI && game.cardBIndex === 0) {
+        game.cardBIndex = 1;
+        playAudio("I-000B", onAudioFinished);
+      } else {
+        moveToNextCard();
+      }
       break;
     case State.CARD_A:
       // 通常再生のみ。タップ待ち。
@@ -707,6 +746,13 @@ function onAudioFinished() {
       render();
       break;
     case State.CARD_B:
+      // 決まり字読みは下の句を 2 回再生する。
+      if (game.mode === PlayMode.KIMARIJI && game.cardBIndex === 0) {
+        game.cardBIndex = 1;
+        const num = game.shuffled[game.index];
+        playAudio(`I-${pad3(num)}B`, onAudioFinished);
+        return;
+      }
       game.index += 1;
       if (game.index >= game.shuffled.length) {
         game.state = State.FINISHED;
@@ -732,6 +778,13 @@ function onFlashTimerFired() {
   }
   try { sharedAudio.pause(); } catch (_) {}
 
+  // 決まり字読み：上の句を time 経過で止めたら、ユーザーのタップを待って下の句へ。
+  if (game.mode === PlayMode.KIMARIJI) {
+    game.state = State.WAIT_TAP;
+    render();
+    return;
+  }
+
   game.index += 1;
   if (game.index >= game.shuffled.length) {
     game.state = State.FINISHED;
@@ -750,8 +803,10 @@ function moveToNextCard() {
   const num = game.shuffled[game.index];
   setCard(num);
   game.state = State.CARD_A;
+  game.cardBIndex = 0;
   render();
-  if (isFlashLike()) {
+  // FLASH/TEST/KIMARIJI は上の句を time 駆動で再生（KIMARIJI のみタップ待ちへ遷移）。
+  if (isFlashLike() || game.mode === PlayMode.KIMARIJI) {
     const dur = game.cardTimes.get(num) ?? DEFAULT_FLASH_MS;
     playAudioFlash(`I-${pad3(num)}A`, dur, onFlashTimerFired);
   } else {
@@ -763,6 +818,7 @@ function onTapNext() {
   if (game.state !== State.WAIT_TAP) return;
   const num = game.shuffled[game.index];
   game.state = State.CARD_B;
+  game.cardBIndex = 0;
   render();
   playAudio(`I-${pad3(num)}B`, onAudioFinished);
 }
@@ -793,6 +849,7 @@ function bindStart(btn, mode) {
 bindStart(els.startNormalBtn, PlayMode.NORMAL);
 bindStart(els.startFlashBtn, PlayMode.FLASH);
 bindStart(els.startTestBtn, PlayMode.TEST);
+bindStart(els.startKimarijiBtn, PlayMode.KIMARIJI);
 els.diagnoseBtn.addEventListener("click", () => {
   els.diagnoseBtn.blur();
   runAudioSelfTest();
@@ -802,6 +859,12 @@ els.skipIntroBtn.addEventListener("click", () => {
   skipIntro = !skipIntro;
   els.skipIntroBtn.setAttribute("aria-pressed", String(skipIntro));
   try { localStorage.setItem("skipIntro", skipIntro ? "1" : "0"); } catch (_) {}
+});
+els.skipIntroKimarijiBtn.addEventListener("click", () => {
+  els.skipIntroKimarijiBtn.blur();
+  skipIntroKimariji = !skipIntroKimariji;
+  els.skipIntroKimarijiBtn.setAttribute("aria-pressed", String(skipIntroKimariji));
+  try { localStorage.setItem("skipIntroKimariji", skipIntroKimariji ? "1" : "0"); } catch (_) {}
 });
 els.tapNextBtn.addEventListener("click", onTapNext);
 els.backBtn.addEventListener("click", returnToOpening);
@@ -833,6 +896,7 @@ document.addEventListener("keydown", (e) => {
   const versionEl = document.getElementById("appVersion");
   if (versionEl) versionEl.textContent = APP_VERSION;
   els.skipIntroBtn.setAttribute("aria-pressed", String(skipIntro));
+  els.skipIntroKimarijiBtn.setAttribute("aria-pressed", String(skipIntroKimariji));
   setCard(0);
   await loadRules();
   render();
