@@ -4,7 +4,7 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-6";
+const APP_VERSION = "v2026-05-05-7";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
