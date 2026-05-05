@@ -9,6 +9,7 @@ const RULES_URL = "rules.csv";
 const PlayMode = Object.freeze({ NORMAL: "normal", FLASH: "flash", TEST: "test" });
 const State = Object.freeze({
   OPENING: "opening",
+  LOADING: "loading",
   INTRO_A: "introA",
   INTRO_B: "introB",
   CARD_A: "cardA",
@@ -21,6 +22,11 @@ const State = Object.freeze({
 
 const FLASH_GAP_MS = 500;
 const DEFAULT_FLASH_MS = 700;
+// プリロードの並列度。モバイルブラウザの同時接続上限を踏まえて控えめに設定。
+const PRELOAD_CONCURRENCY = 4;
+// 通常再生モードでゲーム開始前に必ず取得しておく先頭札数（A/B 両方）。
+// 残りはバックグラウンドで継続ダウンロードする。
+const NORMAL_CRITICAL_CARDS = 5;
 
 // ---- DOM ----
 const els = {
@@ -41,6 +47,8 @@ const els = {
   openingControls: document.getElementById("openingControls"),
   tapControls: document.getElementById("tapControls"),
   flashWaitControls: document.getElementById("flashWaitControls"),
+  loadingControls: document.getElementById("loadingControls"),
+  loadingProgressText: document.getElementById("loadingProgressText"),
   finishedControls: document.getElementById("finishedControls"),
   finishSubtitle: document.getElementById("finishSubtitle"),
 
@@ -80,6 +88,8 @@ const game = {
   pauseAnchorIndex: null,
   // 一時停止前に再生していた句の状態（CARD_A / CARD_B）。再開時に同じ句を頭から再生する。
   pausedFromState: null,
+  // プリロード進捗（State.LOADING 中のみ有効）。
+  loadingProgress: { loaded: 0, total: 0 },
 };
 
 // 単一の Audio 要素を使い回す。iOS Safari は new Audio() を多数生成すると
@@ -89,6 +99,84 @@ sharedAudio.preload = "auto";
 // 連続再生時の「割り込み判定」用。stopAudio() で +1 し、コールバックは自分が発行された
 // 当時の世代と現在の世代が一致するときだけ動作する。
 let audioGen = 0;
+
+// ---- 音声プリロード ----
+// 一度ダウンロードした mp3 は Blob URL としてセッション中保持する。
+// 再生時は audioSrcFor() が cache を引いて URL を返す。
+const audioBlobCache = new Map(); // name -> blob URL
+// 進行中の preload を中断するための AbortController（戻る押下時など）。
+let audioPreloadAbort = null;
+
+function audioSrcFor(name) {
+  return audioBlobCache.get(name) ?? audioUrl(name);
+}
+
+// names を並列度 PRELOAD_CONCURRENCY で fetch → Blob URL 化して cache に格納。
+// onProgress(loaded, total) は 1 件完了するごと（成功・失敗問わず）に呼ぶ。
+// signal が abort されたら速やかに止める（既に完了済みのものは保持）。
+async function preloadAudios(names, onProgress, signal) {
+  const todo = names.filter((n) => !audioBlobCache.has(n));
+  const total = todo.length;
+  if (total === 0) {
+    onProgress?.(0, 0);
+    return;
+  }
+  let loaded = 0;
+  const queue = todo.slice();
+  async function worker() {
+    while (queue.length > 0) {
+      if (signal?.aborted) return;
+      const name = queue.shift();
+      try {
+        const res = await fetch(audioUrl(name), { signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (signal?.aborted) return;
+        audioBlobCache.set(name, URL.createObjectURL(blob));
+      } catch (e) {
+        if (e.name !== "AbortError") {
+          console.warn(`プリロード失敗: ${name}.mp3`, e);
+        }
+      }
+      loaded += 1;
+      if (!signal?.aborted) onProgress?.(loaded, total);
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(PRELOAD_CONCURRENCY, total) },
+    worker
+  );
+  await Promise.all(workers);
+}
+
+// バックグラウンドでの非同期プリロード（戻り値を await しない用途）。
+function preloadAudiosInBackground(names) {
+  preloadAudios(names, null, null).catch(() => {});
+}
+
+function buildAudioNames(mode, shuffled) {
+  const critical = [];
+  const background = [];
+  if (mode === PlayMode.TEST) {
+    for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
+  } else if (mode === PlayMode.FLASH) {
+    critical.push("I-000A");
+    for (const num of shuffled) critical.push(`I-${pad3(num)}A`);
+  } else {
+    // NORMAL: 序歌 + 先頭 NORMAL_CRITICAL_CARDS 枚分は必須。残りはバックグラウンド。
+    critical.push("I-000A", "I-000B");
+    const split = Math.min(NORMAL_CRITICAL_CARDS, shuffled.length);
+    for (let i = 0; i < split; i++) {
+      const num = shuffled[i];
+      critical.push(`I-${pad3(num)}A`, `I-${pad3(num)}B`);
+    }
+    for (let i = split; i < shuffled.length; i++) {
+      const num = shuffled[i];
+      background.push(`I-${pad3(num)}A`, `I-${pad3(num)}B`);
+    }
+  }
+  return { critical, background };
+}
 
 // ---- ユーティリティ ----
 const pad3 = (n) => String(n).padStart(3, "0");
@@ -184,7 +272,7 @@ function stopAudio() {
 function playAudio(name, onEnd) {
   stopAudio();
   const myGen = audioGen;
-  sharedAudio.src = audioUrl(name);
+  sharedAudio.src = audioSrcFor(name);
   sharedAudio.onended = () => { if (myGen === audioGen) onEnd?.(); };
   sharedAudio.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
@@ -214,7 +302,7 @@ function playAudioFlash(name, durationMs, onTimerFired) {
       onTimerFired?.();
     }, Math.max(0, durationMs));
   };
-  sharedAudio.src = audioUrl(name);
+  sharedAudio.src = audioSrcFor(name);
   sharedAudio.onplaying = startTimer;
   sharedAudio.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
@@ -262,12 +350,19 @@ function render() {
     els.modeBadge.classList.toggle("badge-normal", !useFlashColor);
     els.progressBar.classList.toggle("flash", useFlashColor);
 
-    const total = game.shuffled.length || 100;
-    const isIntro = s === State.INTRO_A || s === State.INTRO_B;
-    const shownIndex = isIntro ? 0 : (game.index + 1);
-    els.progressLabel.textContent = isIntro ? "序歌" : `${shownIndex} / ${total}`;
-    const ratio = isIntro ? 0 : (game.index + 1) / total;
-    els.progressBar.style.width = `${(ratio * 100).toFixed(2)}%`;
+    if (s === State.LOADING) {
+      const { loaded, total } = game.loadingProgress;
+      els.progressLabel.textContent = "読み込み中";
+      const r = total > 0 ? loaded / total : 0;
+      els.progressBar.style.width = `${(r * 100).toFixed(2)}%`;
+    } else {
+      const total = game.shuffled.length || 100;
+      const isIntro = s === State.INTRO_A || s === State.INTRO_B;
+      const shownIndex = isIntro ? 0 : (game.index + 1);
+      els.progressLabel.textContent = isIntro ? "序歌" : `${shownIndex} / ${total}`;
+      const ratio = isIntro ? 0 : (game.index + 1) / total;
+      els.progressBar.style.width = `${(ratio * 100).toFixed(2)}%`;
+    }
   }
 
   // フェーズ表示
@@ -318,7 +413,13 @@ function render() {
   els.openingControls.classList.toggle("hidden", s !== State.OPENING);
   els.tapControls.classList.toggle("hidden", s !== State.WAIT_TAP);
   els.flashWaitControls.classList.toggle("hidden", s !== State.FLASH_WAIT);
+  els.loadingControls.classList.toggle("hidden", s !== State.LOADING);
   els.finishedControls.classList.toggle("hidden", s !== State.FINISHED);
+
+  if (s === State.LOADING) {
+    const { loaded, total } = game.loadingProgress;
+    els.loadingProgressText.textContent = `${loaded} / ${total}`;
+  }
 
   if (s === State.FINISHED) {
     els.finishSubtitle.textContent =
@@ -327,16 +428,40 @@ function render() {
 }
 
 // ---- 状態遷移 ----
-function startGame(mode) {
+async function startGame(mode) {
   game.mode = mode;
   game.shuffled = deckForMode(mode);
   game.index = 0;
+  if (mode === PlayMode.TEST && game.shuffled.length === 0) {
+    showError("テスト対象（決まり字 2 字）の札が rules.csv に見つかりませんでした。");
+    return;
+  }
+
+  const { critical, background } = buildAudioNames(mode, game.shuffled);
+  const critToFetch = critical.filter((n) => !audioBlobCache.has(n));
+  if (critToFetch.length > 0) {
+    game.state = State.LOADING;
+    game.loadingProgress = { loaded: 0, total: critToFetch.length };
+    render();
+    audioPreloadAbort = new AbortController();
+    const signal = audioPreloadAbort.signal;
+    await preloadAudios(
+      critical,
+      (loaded, total) => {
+        if (game.state !== State.LOADING) return;
+        game.loadingProgress = { loaded, total };
+        render();
+      },
+      signal
+    );
+    audioPreloadAbort = null;
+    // 中断されていた場合（戻る押下） — returnToOpening 側で OPENING に戻っているので何もしない。
+    if (signal.aborted || game.state !== State.LOADING) return;
+  }
+  // 残りはバックグラウンドで継続取得（NORMAL モードで分割した場合のみ非空）。
+  if (background.length > 0) preloadAudiosInBackground(background);
+
   if (mode === PlayMode.TEST) {
-    if (game.shuffled.length === 0) {
-      showError("テスト対象（決まり字 2 字）の札が rules.csv に見つかりませんでした。");
-      return;
-    }
-    // テストモード：序歌（I-000A/B）を飛ばして即フラッシュ再生
     moveToNextCard();
   } else {
     setCard(0);
@@ -473,6 +598,10 @@ function onTapNext() {
 }
 
 function returnToOpening() {
+  if (audioPreloadAbort) {
+    audioPreloadAbort.abort();
+    audioPreloadAbort = null;
+  }
   stopAudio();
   game.state = State.OPENING;
   game.index = 0;

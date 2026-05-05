@@ -275,6 +275,18 @@ html, body {
   margin: 0;
 }
 
+#loadingControls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.loading-text {
+  color: var(--muted);
+  font-size: 15px;
+  margin: 0;
+}
+
 /* 終了画面 */
 #finishedControls {
   text-align: center;
