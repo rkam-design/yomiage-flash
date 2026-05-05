@@ -246,10 +246,15 @@ html, body {
   font-family: inherit;
   cursor: pointer;
   padding: 6px 10px;
-  margin-top: 2px;
   text-decoration: underline;
   text-underline-offset: 4px;
   letter-spacing: 0.04em;
+}
+.opening-links {
+  display: flex;
+  gap: 16px;
+  margin-top: 2px;
+  align-items: center;
 }
 .text-link:hover { color: var(--accent); }
 .text-link:active { opacity: 0.6; }

@@ -4,7 +4,7 @@
 
 // キャッシュ確認用の表示バージョン。デプロイ前に手動で更新する。
 // 画面右下に小さく表示され、ユーザーが読み込んでいる版を目視確認できる。
-const APP_VERSION = "v2026-05-05-1";
+const APP_VERSION = "v2026-05-05-2";
 
 const CARDS_DIR = "cards";
 const AUDIO_DIR = "mp3_naniwadu";
@@ -59,17 +59,20 @@ const els = {
   startNormalBtn: document.getElementById("startNormalBtn"),
   startFlashBtn: document.getElementById("startFlashBtn"),
   startTestBtn: document.getElementById("startTestBtn"),
+  diagnoseBtn: document.getElementById("diagnoseBtn"),
   tapNextBtn: document.getElementById("tapNextBtn"),
   returnHomeBtn: document.getElementById("returnHomeBtn"),
   navPrevBtn: document.getElementById("navPrevBtn"),
   navNextBtn: document.getElementById("navNextBtn"),
   errorModal: document.getElementById("errorModal"),
+  errorModalTitle: document.getElementById("errorModalTitle"),
   errorModalBody: document.getElementById("errorModalBody"),
   errorModalCloseBtn: document.getElementById("errorModalCloseBtn"),
 };
 
 // ---- エラーモーダル ----
-function showError(message) {
+function showError(message, title = "エラー") {
+  els.errorModalTitle.textContent = title;
   els.errorModalBody.textContent = message;
   els.errorModal.classList.remove("hidden");
 }
@@ -123,24 +126,38 @@ async function preloadAudios(names, onProgress, signal) {
   const total = todo.length;
   if (total === 0) {
     onProgress?.(0, 0);
-    return;
+    return { failed: [] };
   }
   let loaded = 0;
+  const failed = [];
   const queue = todo.slice();
+  async function fetchOnce(name) {
+    const res = await fetch(audioUrl(name), { signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  }
   async function worker() {
     while (queue.length > 0) {
       if (signal?.aborted) return;
       const name = queue.shift();
-      try {
-        const res = await fetch(audioUrl(name), { signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const blob = await res.blob();
-        if (signal?.aborted) return;
-        audioBlobCache.set(name, URL.createObjectURL(blob));
-      } catch (e) {
-        if (e.name !== "AbortError") {
-          console.warn(`プリロード失敗: ${name}.mp3`, e);
+      let blob = null;
+      // 一時的なネット失敗を吸収するため最大 3 回まで指数バックオフでリトライ。
+      for (let attempt = 0; attempt < 3 && !signal?.aborted; attempt++) {
+        try {
+          blob = await fetchOnce(name);
+          break;
+        } catch (e) {
+          if (e.name === "AbortError") return;
+          if (attempt === 2) {
+            console.warn(`プリロード失敗: ${name}.mp3`, e);
+            failed.push(name);
+          } else {
+            await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+          }
         }
+      }
+      if (!signal?.aborted && blob) {
+        audioBlobCache.set(name, URL.createObjectURL(blob));
       }
       loaded += 1;
       if (!signal?.aborted) onProgress?.(loaded, total);
@@ -151,11 +168,62 @@ async function preloadAudios(names, onProgress, signal) {
     worker
   );
   await Promise.all(workers);
+  if (failed.length > 0) {
+    console.warn(`プリロード未完了: ${failed.length} 件`, failed);
+  }
+  return { failed };
 }
 
 // バックグラウンドでの非同期プリロード（戻り値を await しない用途）。
 function preloadAudiosInBackground(names) {
   preloadAudios(names, null, null).catch(() => {});
+}
+
+// ---- 音源自己診断 ----
+// 全 202 件 (I-000A/B + I-001A/B〜I-100A/B) を fetch & decodeAudioData で
+// 検証する。サーバ配信と中身の両方を確認したいケース（音飛び等の調査）に使用。
+async function runAudioSelfTest() {
+  const names = ["I-000A", "I-000B"];
+  for (let i = 1; i <= 100; i++) names.push(`I-${pad3(i)}A`, `I-${pad3(i)}B`);
+  const total = names.length;
+
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) {
+    showError("このブラウザでは音源確認機能が使えません（Web Audio API 非対応）。", "音源確認");
+    return;
+  }
+  const ctx = new AC();
+  showError(`音源確認中... 0 / ${total}`, "音源確認");
+
+  const failed = [];
+  let done = 0;
+  const queue = names.slice();
+  async function worker() {
+    while (queue.length > 0) {
+      const name = queue.shift();
+      try {
+        const res = await fetch(audioUrl(name), { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        await ctx.decodeAudioData(buf);
+      } catch (e) {
+        failed.push({ name, reason: e.message || String(e) });
+      }
+      done += 1;
+      els.errorModalBody.textContent = `音源確認中... ${done} / ${total}`;
+    }
+  }
+  await Promise.all(Array.from({ length: PRELOAD_CONCURRENCY }, worker));
+  try { ctx.close(); } catch (_) {}
+
+  if (failed.length === 0) {
+    els.errorModalBody.textContent = `全 ${total} 件、音源データに問題ありません。\n（サーバ配信・デコード共に正常）`;
+  } else {
+    const head = failed.slice(0, 20).map((f) => `${f.name}: ${f.reason}`).join("\n");
+    const tail = failed.length > 20 ? `\n... ほか ${failed.length - 20} 件` : "";
+    els.errorModalBody.textContent =
+      `${failed.length} / ${total} 件で問題あり:\n\n${head}${tail}`;
+  }
 }
 
 function buildAudioNames(mode, shuffled) {
@@ -627,6 +695,10 @@ function bindStart(btn, mode) {
 bindStart(els.startNormalBtn, PlayMode.NORMAL);
 bindStart(els.startFlashBtn, PlayMode.FLASH);
 bindStart(els.startTestBtn, PlayMode.TEST);
+els.diagnoseBtn.addEventListener("click", () => {
+  els.diagnoseBtn.blur();
+  runAudioSelfTest();
+});
 els.tapNextBtn.addEventListener("click", onTapNext);
 els.backBtn.addEventListener("click", returnToOpening);
 els.returnHomeBtn.addEventListener("click", returnToOpening);
