@@ -170,6 +170,7 @@ function stopAudio() {
   if (game.audio) {
     game.audio.onended = null;
     game.audio.onerror = null;
+    game.audio.onplaying = null;
     try { game.audio.pause(); } catch (_) {}
     game.audio = null;
   }
@@ -226,18 +227,30 @@ function playAudioFlash(name, durationMs, onTimerFired) {
   stopAudio();
   const a = new Audio(audioUrl(name));
   game.audio = a;
+  let timerStarted = false;
+  // 実際に再生が始まった瞬間にタイマーを走らせる。ネットワーク遅延で音声ロードが遅れても、
+  // 必ず音声の頭から durationMs を確保する（タイマー先行で無音のまま次札へ進む事故を防ぐ）。
+  const startTimer = () => {
+    if (timerStarted || game.audio !== a) return;
+    timerStarted = true;
+    game.flashTimer = setTimeout(() => {
+      game.flashTimer = null;
+      onTimerFired?.();
+    }, Math.max(0, durationMs));
+  };
+  a.onplaying = startTimer;
   a.onerror = () => {
     console.warn(`音声ファイル読み込み失敗: ${name}.mp3`);
-    onTimerFired?.();
+    if (game.audio === a) onTimerFired?.();
   };
   const p = a.play();
   if (p && typeof p.catch === "function") {
-    p.catch((err) => console.warn("音声再生に失敗:", err));
+    p.catch((err) => {
+      console.warn("音声再生に失敗:", err);
+      // 再生不可（autoplay 拒否等）でも進行は止めない。タイマーをフォールバック起動。
+      if (game.audio === a) startTimer();
+    });
   }
-  game.flashTimer = setTimeout(() => {
-    game.flashTimer = null;
-    onTimerFired?.();
-  }, Math.max(0, durationMs));
 }
 
 // ---- 画面描画 ----
